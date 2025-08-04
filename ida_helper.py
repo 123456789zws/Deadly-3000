@@ -126,4 +126,136 @@ class IDAHelper():
         '''
         set_cmt(addr, comm, True)
 
+    
+    @staticmethod
+    def patch_nop(ea, count=1):
+        '''
+        arm64下， 在 ea 处 patch count条指令为 nop 指令，默认1条
+        '''
+        code = IDAHelper.asm_factory(KS_ARCH_ARM64, KS_MODE_LITTLE_ENDIAN, "nop".encode('utf8'))
+        for t in range(count):
+            patch_dword(ea + 4*t, code)
+            IDAHelper.make_code(ea + 4*t)
+
+    
+    @staticmethod
+    def asm_factory(arch, mode, code, addr=0, syntax = 0):
+        '''
+        各平台架构的汇编器工厂. 返回 int 数字表示指令
+        @param  code    汇编代码
+        @param  addr    指令所在地址，会影响 adr 等 pc 相关指令的生成
+        '''
+        ks = Ks(arch, mode)
+        if syntax != 0:
+            ks.syntax = syntax
         
+        encoding, count = ks.asm(code, addr)
+        print("%s = [ " % code, end='')
+        for i in encoding:
+            print("%02x " % i, end='')
+        print("]")
+        return int.from_bytes(bytes(encoding), 'little')
+
+
+    @staticmethod
+    def make_code(ea):
+        '''
+        设置 ea 处为指令
+        '''
+        try:
+            create_insn(ea)
+        except Exception as e:
+            print("make_code error " + e)
+
+    @staticmethod
+    def search_next_insn(start_ea, insn:str):
+        '''
+        从 start_ea 搜索 吓一跳 insn 出现的地址
+        '''
+        end_ea = BADADDR
+        insn = insn.lower()
+        cur_ea = start_ea
+        while cur_ea != end_ea:
+            cur_insn = GetDisasm(cur_ea).lower()
+            if cur_insn.find(insn) > -1:
+                print("{} {}".format(hex(cur_ea), cur_insn))
+                return cur_ea
+            cur_ea = next_head(cur_ea)
+        
+        return BADADDR
+
+    
+    @staticmethod
+    def get_fun_info(ea):
+        '''
+        获取函数的信息
+        '''
+        r = {'start':0, 'end':0, 'flags':0,'frame':0,  # frame id
+        'frsize':0, # 局部变量大小
+        'argsize': 0, # 参数大小
+        'fpd' : 0,# frame pointer delta
+        'frregs': 0, # 保存的寄存器空间大小
+        }
+        try:
+            r['start'] = get_func_attr(ea, FUNCATTR_START)
+            r['end'] = get_func_attr(ea, FUNCATTR_END      )
+            r['flags'] = get_func_attr(ea,  FUNCATTR_FLAGS   )
+            r['frame'] = get_func_attr(ea, FUNCATTR_FRAME   )
+            r['frsize'] = get_func_attr(ea, FUNCATTR_FRSIZE  )
+            r['argsize'] = get_func_attr(ea, FUNCATTR_ARGSIZE )
+            r['fpd'] = get_func_attr(ea, FUNCATTR_FPD     )
+            r['frregs'] = get_func_attr(ea, FUNCATTR_FRREGS  )
+            r['name']   =   IDAHelper.get_ea_name(r['start'])
+        except Exception as e:
+            pass
+        return r
+
+    @staticmethod
+    def merge_fun_range(start_ea, end_ea):
+        '''
+        根据当前函数开始地址，搜索下一个函数NF，若NF结束地址小于等于 end_ea ， 则添加到当前函数的 children 列表中。
+        搜索结束后，合并所有函数。
+        '''
+        cur_fun = IDAHelper.get_fun_info(start_ea)
+        cur_ea = cur_fun['start']
+        next_ea = get_next_func(cur_ea)
+        children  = set()
+        
+        while True:
+            info = IDAHelper.get_fun_info(next_ea)
+            if info and info['start'] <= end_ea:
+                children.add(info['start'])
+                next_ea = get_next_func(next_ea)
+            else:
+                break
+        
+        print("[+]total {} functions to merge".format(len(children)))
+        IDAHelper.merge_funcs(cur_ea, list(children))
+
+    @staticmethod
+    def merge_funcs(parent, children):
+        '''
+        把 children 函数列表, 全部合并到 parent 函数中.
+        算法: 按地址从小到大排序 children, 遍历 children , 获取 child 开始、结束地址， 删除 child 函数， 修改 parent 结束地址为 child 结束地址。
+        :param parent:int, children:list[int]
+        '''
+        if not children:
+            return
+        children.sort()
+        max_end = 0
+        for i, child in enumerate(children):
+            info = IDAHelper.get_fun_info(child)
+            print("{} get fun {} info {}".format(i, hex(child), info))
+            if ida_funcs.del_func(info['start']):
+                max_end = max(max_end, info['end'])
+                if ida_funcs.set_func_end(parent, max_end):
+                    print("[√]adjust fun {} to end {}".format(hex(parent), hex(max_end)))
+                else:
+                    print("[X]Failed to adjust fun {} to end {}".format(hex(parent), hex(max_end)))
+                    
+            else:
+                print("[X-{}]failed to delete function {}".format(i, hex(info['start'])))
+                break
+        
+        
+        print("[+]merge_funcs complete.")
