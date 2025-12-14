@@ -98,7 +98,7 @@ function dump_bss() {
         // 确保当前输出的字符串地址范围，不在前一个字符串的范围内
         if (last_str_len > 0 && (last_str_addr + last_str_len) > offset)
             continue;
-        var s = try_read_str(Module.findBaseAddress("xxx.so").add(offset))
+        var s = try_read_str(Process.findModuleByName("libXXX.so").base.add(offset))
         if (s != "") {
             console.log(`${offset.toString(16)} :  ${s}`)
             last_str_addr = offset;
